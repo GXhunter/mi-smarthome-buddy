@@ -1,0 +1,50 @@
+# 本地工具状态和构建产物
+.gradle/
+.gradle-user-home/
+.idea/
+.vscode/
+**/build/
+local.properties
+*.iml
+__pycache__/
+
+# 签名私钥及本地凭据；示例环境配置可以公开
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
+key.properties
+keystore.properties
+signing.properties
+credentials.properties
+gradle-local.properties
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# 实机证据、原版 APK 和反编译结果仅保留在本地
+work/
+jadx_out/
+apktool_out/
+*.apk
+*.apks
+*.xapk
+*.aab
+*.dex
+*.odex
+*.vdex
+*.bundle
+*.bundle.bin
+
+# 日志可能包含账号、设备标识、请求参数和本机路径
+*.log
+*.trace
+*.hprof
+*.dmp
+*.pcap
+*.pcapng
+hs_err_pid*
+replay_pid*
