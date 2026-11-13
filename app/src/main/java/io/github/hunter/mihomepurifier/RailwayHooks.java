@@ -1,6 +1,7 @@
 package io.github.hunter.mihomepurifier;
 
 import android.content.Context;
+import android.net.Uri;
 import android.os.Build;
 import android.security.NetworkSecurityPolicy;
 import android.util.Log;
@@ -10,6 +11,10 @@ import android.view.WindowInsets;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.Collections;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedInterface;
@@ -43,9 +48,13 @@ final class RailwayHooks {
             Constructor<?> constructor = operator.getDeclaredConstructor(View.class,
                     loader.loadClass("androidx.fragment.app.FragmentActivity"),
                     loader.loadClass("com.MobileTicket.ui.fragment.HomePageFragment"));
-            cacheHook = module.hook(getCache).intercept(chain -> unit);
-            updateHook = module.hook(update).intercept(chain -> null);
-            scrollHook = module.hook(scroll).intercept(chain -> null);
+            Set<Object> hidden = Collections.newSetFromMap(Collections.synchronizedMap(new WeakHashMap<>()));
+            cacheHook = module.hook(getCache).intercept(chain ->
+                    hidden.contains(chain.getThisObject()) ? unit : chain.proceed());
+            updateHook = module.hook(update).intercept(chain ->
+                    hidden.contains(chain.getThisObject()) ? null : chain.proceed());
+            scrollHook = module.hook(scroll).intercept(chain ->
+                    hidden.contains(chain.getThisObject()) ? null : chain.proceed());
             layoutHook = module.hook(constructor).intercept(chain -> {
                 Object result = chain.proceed();
                 View root = (View) chain.getArg(0);
@@ -56,6 +65,7 @@ final class RailwayHooks {
                         && station.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
                     pause.invoke(chain.getThisObject());
                     banner.setVisibility(View.GONE);
+                    hidden.add(chain.getThisObject());
                     // 原查询面板以负间距覆盖广告，移除广告后改为避让标题栏和状态栏。
                     Runnable align = () -> {
                         WindowInsets insets = root.getRootWindowInsets();
@@ -93,7 +103,7 @@ final class RailwayHooks {
         redirectAdRequests(module, loader);
         blockOrderPageAd(module, loader);
         hideHomeBanner(module, loader);
-        // API 102 的 onPackageReady 阶段已经可以访问此版 12306 的业务类。
+        // 业务入口在 API 102 的包就绪阶段可见，各项独立检查签名。
         String[][] targets = {
                 {"com.MobileTicket.ads.bean.BeanAds", "haveSplashAd"},
                 {"com.MobileTicket.utils.HomePageUtils$Companion", "getCAN_SHOW_SPLASH"},
@@ -102,7 +112,7 @@ final class RailwayHooks {
         for (String[] target : targets) {
             try {
                 Method method = loader.loadClass(target[0]).getDeclaredMethod(target[1]);
-                if (method.getReturnType() != boolean.class) {
+                if (method.getReturnType() != boolean.class || Modifier.isAbstract(method.getModifiers())) {
                     throw new IllegalStateException("开屏判断返回类型已变化");
                 }
                 AtomicBoolean reported = new AtomicBoolean();
@@ -159,9 +169,15 @@ final class RailwayHooks {
                     .getDeclaredMethod("getAdsUrl01", Context.class), String.class, true);
             AtomicBoolean reported = new AtomicBoolean();
             module.hook(url).intercept(chain -> {
+                String original = (String) chain.proceed();
+                if (original == null) {
+                    return null;
+                }
+                Uri endpoint = Uri.parse(original);
                 // 回环地址只用于确认会被系统拒绝的明文请求，避免实际连接本机。
-                if (NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1")) {
-                    return chain.proceed();
+                if (!"ad.12306.cn".equalsIgnoreCase(endpoint.getHost())
+                        || NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("127.0.0.1")) {
+                    return original;
                 }
                 if (reported.compareAndSet(false, true)) {
                     module.log(Log.INFO, TAG, "12306 广告服务地址已替换为本机地址");

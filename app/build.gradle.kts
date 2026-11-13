@@ -31,10 +31,19 @@ dependencies {
 }
 
 val compilePatchCheck by tasks.registering(JavaCompile::class) {
-    source("src/main/java/io/github/hunter/mihomepurifier/CookerBundlePatch.java", "src/test/java")
+    source("src/main/java/io/github/hunter/mihomepurifier/CookerBundlePatch.java",
+        "src/main/java/io/github/hunter/mihomepurifier/MiHomeDex.java", "src/test/java")
     classpath = files()
     destinationDirectory.set(layout.buildDirectory.dir("patch-check"))
     options.encoding = "UTF-8"
+}
+
+tasks.register<JavaExec>("verifyMiHomeDex") {
+    dependsOn(compilePatchCheck)
+    classpath = files(compilePatchCheck.flatMap { it.destinationDirectory })
+    mainClass.set("io.github.hunter.mihomepurifier.MiHomeDexTest")
+    enableAssertions = true
+    providers.gradleProperty("miHomeApks").orNull?.split(File.pathSeparator)?.let { args(it) }
 }
 
 tasks.register<JavaExec>("verifyPatch") {

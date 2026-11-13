@@ -22,11 +22,11 @@
 环境基线：JDK 21、Android SDK Platform 37、Build Tools 36.0.0。SDK 路径通过环境变量或未提交的 `local.properties` 配置，禁止写死开发者机器路径。
 
 ```powershell
-./gradlew.bat --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch
+./gradlew.bat --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch :app:verifyMiHomeDex
 python scripts/verify_apk.py
 ```
 
-macOS / Linux 使用 `bash gradlew`、`python3`。如有自行提取的真实插件，可给 Gradle 命令增加 `-PcookerBundle=<main.bundle 的绝对路径>`；不得把样本提交到仓库。APK 输出为 `app/build/outputs/apk/debug/app-debug.apk`。
+macOS / Linux 使用 `bash gradlew`、`python3`。可用 `-PcookerBundle=<main.bundle 的绝对路径>` 和 `-PmiHomeApks=<米家 APK 的绝对路径>` 检查真实样本。多个 APK 路径按系统路径分隔符连接，Windows 为分号，macOS / Linux 为冒号。样本不提交。APK 输出为 `app/build/outputs/apk/debug/app-debug.apk`。
 
 ## 修改前的检查
 
@@ -38,24 +38,24 @@ macOS / Linux 使用 `bash gradlew`、`python3`。如有自行提取的真实插
 
 ## 当前适配证据
 
-米家只对 11.8.707（110817071）和 11.9.705（110917051）安装规则。下表双值依次对应这两个版本，升级后须重新核对。
+自适配规则使用米家 11.8.707（110817071）和 11.9.705（110917051）的 APK 验证，11.9.705 在一加 13 上完成页面回归。各功能根据当前宿主的入口和业务特征独立启用。
 
 | 功能 | 入口与约束 |
 | --- | --- |
-| 产品 Tab | `TabPageIndicatorNew$TabView.setTabInfo` 的参数为 `_m_j.j87` / `_m_j.ha7`。校验 `OooO00o` 为宿主的 `TabId`，隐藏 `Brand` 并保留原索引 |
-| 商城中心 | `SettingMainPageV2.onViewCreated(View, Bundle)` 完成后，按 ID `2131432991` / `2131433041` 从当前页面找出并隐藏整行。过早在 `onCreateView` 中隐藏会被后续初始化恢复 |
-| 广告策略 | `_m_j.y64.OooO00o(String)` / `_m_j.z74.OooO00o(String)`。安装前用不同样本值验证字段映射，安装后验证六个开关和等待时间归零，自检失败时撤销 Hook |
-| 开屏等待 | `_m_j.sz8` / `_m_j.s19` 构造完成后，分别用 `_m_j.in1.OooO0o()` / `_m_j.eo1.OooO0o()` 确认隐私同意。仅在已同意时发出无广告事件并将广告准备参数改为 false |
-| 电饭煲默认页 | `CatalystInstanceImpl.loadScriptFromFile(String, String, boolean)`，只处理 `chunmi.cooker.cmwy3` 的插件路径 `1016529/1034887/android/main.bundle` |
+| 产品 Tab | 在 `TabPageIndicatorNew$TabView.setTabInfo` 的参数中唯一定位宿主 `TabId` 字段，隐藏 `Brand` 并保留原索引 |
+| 商城中心 | `SettingMainPageV2.onViewCreated(View, Bundle)` 完成后，按 `商城中心` / `Store` 文案和可点击的 `ItemOptionView` 唯一定位整行。其他语言保留原页面 |
+| 广告策略 | DEX 中唯一匹配引用六个广告开关、等待时间和广告日志标记的静态解析方法。安装前用不同样本值和空样本定位字段，安装后验证归零，自检失败时撤销 Hook |
+| 开屏等待 | DEX 指令内唯一匹配广告准备事件和宿主隐私判断，再校验事件对象的 Activity 构造器。仅在宿主确认已同意时发出无广告事件并将广告准备参数改为 false |
+| 电饭煲默认页 | `CatalystInstanceImpl.loadScriptFromFile(String, String, boolean)` 根据插件目录结构和 model_list.json 识别仅面向电饭煲的插件，再定位唯一符合双 Tab 横滑模板的 indexed RAM bundle 模块 |
 
-规则按包名与进程名组合隔离，页面和广告规则仅在对应主进程注册，电饭煲还允许米家 `:plugin0`～`:plugin4`。使用包就绪的加载器定位目标类，在对应 Application 创建前从宿主 Context 查询版本，随后撤掉版本查询 Hook。推送、摄像头等其他进程跳过。
+规则按包名与进程名组合隔离，页面和广告规则仅在对应主进程注册，电饭煲还允许米家 `:plugin0`～`:plugin4`。使用包就绪的加载器定位目标类。米家主进程在 Application 创建前检查 APK 及 split 中的标准 DEX，缓存由扫描规则版本和 DEX ZIP 条目指纹控制。DEX 041 容器或无法唯一确认的成员会跳过相应规则。扫描范围为已安装的 base/split APK，推送和摄像头等其他进程跳过。
 
 ## 12306 适配
 
 - 基线：5.9.6.8（280），包名 `com.MobileTicket`。入口为 `RailwayHooks.java`。
 - API 102 的 `onPackageReady` 可直接访问业务类；实测此时再 Hook 壳的 `attachBaseContext` 已错过调用，不采用该方案。
 - 将 `BeanAds.haveSplashAd()`、`HomePageUtils$Companion.getCAN_SHOW_SPLASH()`、`AdUtils.splashNeedShowAgain()` 三个布尔结果设为 false，每项独立处理不兼容。
-- 广告地址层：`AppHelp.getAdsUrl01(Context)` 仅在系统拒绝回环地址明文 HTTP 时返回 `http://127.0.0.1/`。5.9.6.8 既有记录显示约 1–7 ms 内回调失败，仍会构造请求并进入失败处理。
+- 广告地址层：`AppHelp.getAdsUrl01(Context)` 仅在原地址属于 `ad.12306.cn` 且系统拒绝回环地址明文 HTTP 时返回 `http://127.0.0.1/`。5.9.6.8 既有记录显示约 1–7 ms 内回调失败，仍会构造请求并进入失败处理。
 - 订单页 H5 广告位为 `0074`。`H5AdExposurePlugin.handleEvent(H5Event,H5BridgeContext)` 只匹配 `exposureH5Request` + POST + params.placementNo=0074，回传原桥接协议的 result=1、data.materialsList=[]，不执行广告网络请求；其他桥接请求原样执行。
 - 不修改网络安全策略，不全局拦截 HttpsUtils；保留显示层处理缓存和布局。
 - 首页顶部轮播使用 `CarouseAdOperator`：拦截缓存读取 `getCarouseAdData`（返回宿主 Kotlin Unit）、`updateAd(boolean)`、`restartHandlerScroll`；构造后暂停轮播并隐藏 `home_ticket_item_ad`，移除 `home_select_station` 原负顶部间距，按标题栏和系统状态栏高度重新定位。布局变化后须验证查询按钮不被遮挡。
@@ -77,7 +77,7 @@ macOS / Linux 使用 `bash gradlew`、`python3`。如有自行提取的真实插
 - Hook 必须限制目标包、进程和具体入口；避免全局拦截 View、网络或计时器来解决局部问题。
 - 不跳过隐私同意、登录、设备认证、错误处理或实际设备控制保护。
 - 不将全部初始化延时归为广告延时。保留首页就绪条件和必要兜底，区分首次绘制、开屏撤除、设备数据就绪。
-- 电饭煲补丁校验版本路径、索引边界及唯一源码特征；生成独立副本，原子替换副本，保留原插件、资源基址和其他模块字节。失败时加载原插件并记录错误。
+- 电饭煲补丁校验插件目录、型号类别、索引边界及唯一源码特征；生成独立副本，原子替换副本，保留原插件、资源基址和其他模块字节。失败时加载原插件并记录错误。
 - 新增非平凡逻辑应配有小型测试或断言自检。简单 UI 隐藏优先实机验证，无需新增测试框架。
 
 ## 验证与交付

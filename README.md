@@ -26,14 +26,14 @@
 | 模块版本 | 0.6.3 |
 | 已验证 12306 版本 | 5.9.6.8（280），包名 `com.MobileTicket` |
 | 米家包名 | `com.xiaomi.smarthome` |
-| 米家适配版本 | 11.8.707（110817071，历史实测）和 11.9.705（110917051，0.6.3 实测） |
+| 米家验证样本 | 11.8.707（110817071，广告入口解析）和 11.9.705（110917051，解析和实机） |
 | 框架要求 | 支持 Modern Xposed API 102 的 LSPosed |
 | 最低 Android 版本 | Android 8.0（API 26），不代表该版本已实测 |
 | 已验证设备 | 一加 13，Android 16 / ColorOS 16.1.0，LSPosed IT 2.2.1-it（7921） |
 | 电饭煲 | 米家智能微压 IH 电饭煲 3L，型号 `chunmi.cooker.cmwy3` |
-| 电饭煲插件版本 | `1016529/1034887` |
+| 已验证电饭煲插件 | `1016529/1034887` |
 
-模块按上表的宿主版本号启用规则，其他版本保留原行为。电饭煲默认页补丁还要求匹配指定插件路径和源码特征。
+模块按功能检查当前宿主的接口和业务特征。缺失或存在多个候选时，该功能保留宿主行为。上表列出实际验证过的样本。
 
 ### 航旅纵横适配状态
 
@@ -58,7 +58,7 @@ adb -s <设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 
 参考手机上 HookVIP 4.1.7 的实际 Hook 调试记录，使用 Modern Xposed API 102 独立实现三个开屏布尔判断拦截：`BeanAds.haveSplashAd()`、`HomePageUtils.Companion.getCAN_SHOW_SPLASH()`、`AdUtils.splashNeedShowAgain()`。不依赖 HookVIP，不包含其实现代码，也不修改语言判断。
 
-本规则仅作用于 12306 5.9.6.8 主进程。系统拒绝回环地址的明文 HTTP 时，`AppHelp.getAdsUrl01(Context)` 返回 `http://127.0.0.1/`，通过该方法获取地址的开屏、轮播及天气广告请求进入失败处理。允许明文时保留宿主原广告地址。
+本规则仅作用于 12306 主进程，逐项校验业务接口。当 `AppHelp.getAdsUrl01(Context)` 原地址属于 `ad.12306.cn` 且系统拒绝回环明文 HTTP 时，将该地址替换为 `http://127.0.0.1/`。
 
 保留开屏显示判断、轮播缓存读取及布局兜底，避免旧缓存和默认图片继续展示。当前不再使用 0.6.0 的三个加载入口拦截；没有全局拦截通用网络组件，也不修改 App 的网络安全策略。其他接口、第三方 SDK、网页及缓存广告不一定经过此地址方法。
 
@@ -68,7 +68,7 @@ adb -s <设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 
 - 广告屏蔽覆盖上述官方策略控制的广告，不保证覆盖设备插件自有推广或第三方网页。广告策略配置请求本身可能继续执行，但不能通过该解析结果重新开启广告。
 - 跳过广告等待不会省去米家的代码加载、首页渲染或设备数据请求，因此不保证每次启动都有明显提速。
-- 电饭煲补丁生成独立副本，不覆盖原始插件文件。版本或源码特征不匹配时会加载原插件。
+- 电饭煲补丁根据插件型号声明和双 Tab 横滑结构选择目标模块。其他页面结构会加载原插件。补丁写入独立副本。
 - 已验证页面进入、Tab 切换与入口隐藏；未通过实际烹饪操作验证设备控制功能。
 
 ## 停用与恢复
@@ -84,14 +84,14 @@ adb -s <设备序列号> install -r app/build/outputs/apk/debug/app-debug.apk
 Windows PowerShell：
 
 ```powershell
-./gradlew.bat --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch
+./gradlew.bat --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch :app:verifyMiHomeDex
 python scripts/verify_apk.py
 ```
 
 macOS / Linux：
 
 ```sh
-bash gradlew --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch
+bash gradlew --gradle-user-home .gradle-user-home :app:assembleDebug :app:lintDebug :app:verifyPatch :app:verifyMiHomeDex
 python3 scripts/verify_apk.py
 ```
 

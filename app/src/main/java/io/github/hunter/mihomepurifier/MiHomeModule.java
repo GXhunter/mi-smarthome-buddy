@@ -2,12 +2,15 @@ package io.github.hunter.mihomepurifier;
 
 import android.app.Instrumentation;
 import android.content.Context;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -18,6 +21,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Arrays;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -25,9 +31,7 @@ import io.github.libxposed.api.XposedModule;
 public final class MiHomeModule extends XposedModule {
     private static final String TARGET_PACKAGE = "com.xiaomi.smarthome";
     static final String TAG = "AdHunter";
-    private static final long MI_HOME_11_8_707 = 110817071;
-    private static final long MI_HOME_11_9_705 = 110917051;
-    private static final long RAILWAY_5_9_6_8 = 280;
+    private static final long MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
     private String mProcessName;
 
     @Override
@@ -45,12 +49,23 @@ public final class MiHomeModule extends XposedModule {
     @Override
     public void onPackageReady(PackageReadyParam param) {
         String packageName = param.getPackageName();
-        if (!isTargetProcess(packageName)) {
+        if (!param.isFirstPackage() || !isTargetProcess(packageName)) {
             return;
         }
         ClassLoader loader = param.getClassLoader();
+        if (RailwayHooks.PACKAGE.equals(packageName)) {
+            RailwayHooks.install(this, loader);
+            return;
+        }
+        defaultCookerDeviceTab(loader);
+        if (!TARGET_PACKAGE.equals(mProcessName)) {
+            return;
+        }
+        hideProductTab(loader);
+        hideMallCenter(loader);
+        var app = param.getApplicationInfo();
         try {
-            // 包就绪时 Application 尚未创建。用创建前的宿主 Context 查询版本。
+            // 用创建前的宿主 Context 访问代码缓存，并在业务首次调用前安装规则。
             Method newApplication = Instrumentation.class.getDeclaredMethod(
                     "newApplication", ClassLoader.class, String.class, Context.class);
             var startup = new Hooker() {
@@ -62,12 +77,15 @@ public final class MiHomeModule extends XposedModule {
                     if (chain.getArg(0) == loader && packageName.equals(context.getPackageName())) {
                         mHandle.unhook();
                         try {
-                            PackageInfo info = context.getPackageManager().getPackageInfo(packageName, 0);
-                            long version = Build.VERSION.SDK_INT >= 28
-                                    ? info.getLongVersionCode() : info.versionCode;
-                            installForVersion(packageName, loader, version);
-                        } catch (PackageManager.NameNotFoundException | SecurityException e) {
-                            log(Log.WARN, TAG, "宿主版本无法核对，跳过规则");
+                            long started = android.os.SystemClock.elapsedRealtime();
+                            var targets = MiHomeDex.findCached(app.sourceDir, app.splitSourceDirs,
+                                    context.getCodeCacheDir().toPath());
+                            log(Log.INFO, TAG, "米家广告入口解析耗时 "
+                                    + (android.os.SystemClock.elapsedRealtime() - started) + " ms");
+                            disableAds(loader, targets.policy());
+                            skipSplashAdWait(loader, targets.adPrepared(), targets.consent());
+                        } catch (IOException | RuntimeException e) {
+                            log(Log.WARN, TAG, "广告策略和开屏入口无法定位：" + e.getClass().getSimpleName());
                         }
                     }
                     return chain.proceed();
@@ -75,7 +93,7 @@ public final class MiHomeModule extends XposedModule {
             };
             startup.mHandle = hook(newApplication).intercept(startup);
         } catch (ReflectiveOperationException | RuntimeException e) {
-            log(Log.ERROR, TAG, "宿主版本检查入口不兼容", e);
+            log(Log.ERROR, TAG, "广告策略和开屏初始化入口不兼容", e);
         }
     }
 
@@ -87,33 +105,15 @@ public final class MiHomeModule extends XposedModule {
         return RailwayHooks.PACKAGE.equals(packageName) && RailwayHooks.PACKAGE.equals(mProcessName);
     }
 
-    private void installForVersion(String packageName, ClassLoader loader, long version) {
-        if (RailwayHooks.PACKAGE.equals(packageName) && version == RAILWAY_5_9_6_8) {
-            RailwayHooks.install(this, loader);
-        } else if (TARGET_PACKAGE.equals(packageName)
-                && (version == MI_HOME_11_8_707 || version == MI_HOME_11_9_705)) {
-            if (TARGET_PACKAGE.equals(mProcessName)) {
-                boolean newer = version == MI_HOME_11_9_705;
-                hideProductTab(loader, newer ? "_m_j.ha7" : "_m_j.j87");
-                hideMallCenter(loader, newer ? 2131433041 : 2131432991);
-                disableAds(loader, newer ? "_m_j.z74" : "_m_j.y64");
-                skipSplashAdWait(loader, newer ? "_m_j.s19" : "_m_j.sz8",
-                        newer ? "_m_j.eo1" : "_m_j.in1");
-            }
-            defaultCookerDeviceTab(loader);
-        } else {
-            log(Log.WARN, TAG, "宿主版本未适配，保留原行为：" + packageName + " " + version);
-        }
-    }
-
-    private void hideMallCenter(ClassLoader loader, int mallId) {
+    private void hideMallCenter(ClassLoader loader) {
         try {
             Class<?> page = loader.loadClass("com.xiaomi.smarthome.miio.page.SettingMainPageV2");
+            Class<?> rowType = loader.loadClass("com.xiaomi.smarthome.miio.page.ItemOptionView");
             hook(requireSignature(page.getDeclaredMethod("onViewCreated", View.class, Bundle.class),
                     void.class, false))
                     .intercept(chain -> {
                         Object result = chain.proceed();
-                        View mall = ((View) chain.getArg(0)).findViewById(mallId);
+                        View mall = findMallRow((View) chain.getArg(0), rowType);
                         if (mall != null) {
                             mall.setVisibility(View.GONE);
                             log(Log.INFO, TAG, "我的页面商城中心已隐藏");
@@ -127,41 +127,79 @@ public final class MiHomeModule extends XposedModule {
         }
     }
 
-    private void disableAds(ClassLoader loader, String policyClass) {
+    private static View findMallRow(View root, Class<?> rowType) {
+        ArrayDeque<View> views = new ArrayDeque<>();
+        views.add(root);
+        View match = null;
+        while (!views.isEmpty()) {
+            View view = views.removeFirst();
+            if (view instanceof ViewGroup group) {
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    views.add(group.getChildAt(i));
+                }
+            } else if (view instanceof TextView title && ("商城中心".contentEquals(title.getText())
+                    || "Store".contentEquals(title.getText()))) {
+                for (var parent = title.getParent(); parent instanceof View row && row != root;
+                     parent = row.getParent()) {
+                    if (rowType.isInstance(row) && row.isClickable()) {
+                        if (match != null && match != row) {
+                            return null;
+                        }
+                        match = row;
+                        break;
+                    }
+                }
+            }
+        }
+        return match;
+    }
+
+    private void disableAds(ClassLoader loader, MiHomeDex.MethodId target) {
+        if (target == null) {
+            log(Log.WARN, TAG, "广告策略入口缺失或不唯一");
+            return;
+        }
         HookHandle policyHook = null;
         boolean verified = false;
         try {
-            Class<?> policy = loader.loadClass(policyClass);
-            // 底部、实时开屏、横幅、内容、开屏展示、个人中心。
-            String[] names = {"OooO0O0", "OooO0o0", "OooO0o", "OooO0oO", "OooO0oo", "OooO"};
-            Field[] switches = new Field[names.length];
-            for (int i = 0; i < names.length; i++) {
-                switches[i] = policy.getDeclaredField(names[i]);
-                switches[i].setAccessible(true);
-                if (switches[i].getType() != int.class
-                        || Modifier.isStatic(switches[i].getModifiers())
-                        || Modifier.isFinal(switches[i].getModifiers())) {
-                    throw new IllegalStateException("广告策略字段类型已变化");
-                }
-            }
-            Field loadTime = policy.getDeclaredField("OooO00o");
-            loadTime.setAccessible(true);
-            if (loadTime.getType() != long.class || Modifier.isStatic(loadTime.getModifiers())
-                    || Modifier.isFinal(loadTime.getModifiers())) {
-                throw new IllegalStateException("广告等待字段类型已变化");
-            }
-            Method parse = requireSignature(policy.getDeclaredMethod("OooO00o", String.class), policy, true);
+            Class<?> policy = loader.loadClass(target.owner());
+            Method parse = requireSignature(policy.getDeclaredMethod(target.name(), String.class), policy, true);
+            parse.setAccessible(true);
             String sample = "{\"code\":0,\"data\":{\"bottomSwitch\":1,"
                     + "\"screenLoadSwitch\":2,\"bannerLoadSwitch\":3,\"contentDisplaySwitch\":4,"
                     + "\"startSwitch\":5,\"personalCenterSwitch\":6,\"resourceLoadTime\":3000}}";
             Object original = parse.invoke(null, sample);
-            for (int i = 0; i < switches.length; i++) {
-                if (switches[i].getInt(original) != i + 1) {
-                    throw new IllegalStateException("广告策略字段语义已变化");
+            Object baseline = parse.invoke(null, "{\"code\":0,\"data\":{}}");
+            Field[] switches = new Field[6];
+            Field wait = null;
+            for (Field field : policy.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (Modifier.isStatic(modifiers) || Modifier.isFinal(modifiers)) {
+                    continue;
+                }
+                if (field.getType() != int.class && field.getType() != long.class) {
+                    continue;
+                }
+                field.setAccessible(true);
+                if (field.getType() == int.class) {
+                    int slot = field.getInt(original) - 1;
+                    if (slot >= 0 && slot < switches.length && field.getInt(baseline) == 0) {
+                        if (switches[slot] != null) {
+                            throw new IllegalStateException("广告开关字段不唯一");
+                        }
+                        switches[slot] = field;
+                    }
+                } else if (field.getType() == long.class
+                        && field.getLong(original) == 3000L && field.getLong(baseline) == 0L) {
+                    if (wait != null) {
+                        throw new IllegalStateException("广告等待字段不唯一");
+                    }
+                    wait = field;
                 }
             }
-            if (loadTime.getLong(original) != 3000L) {
-                throw new IllegalStateException("广告等待字段语义已变化");
+            Field loadTime = wait;
+            if (loadTime == null || Arrays.asList(switches).contains(null)) {
+                throw new IllegalStateException("广告策略字段语义已变化");
             }
             policyHook = hook(parse).intercept(chain -> {
                 Object result = chain.proceed();
@@ -195,16 +233,22 @@ public final class MiHomeModule extends XposedModule {
         }
     }
 
-    private void skipSplashAdWait(ClassLoader loader, String splashClass, String consentClass) {
+    private void skipSplashAdWait(ClassLoader loader, MiHomeDex.MethodId event, MiHomeDex.MethodId consent) {
+        if (event == null || consent == null) {
+            log(Log.WARN, TAG, "开屏广告事件或隐私判断入口缺失或不唯一");
+            return;
+        }
         HookHandle eventHook = null;
         HookHandle constructorHook = null;
         boolean installed = false;
         try {
-            Class<?> splash = loader.loadClass(splashClass);
-            Method adPrepared = requireSignature(splash.getDeclaredMethod("OooO00o", boolean.class),
+            Class<?> splash = loader.loadClass(event.owner());
+            Method adPrepared = requireSignature(splash.getDeclaredMethod(event.name(), boolean.class),
                     void.class, false);
-            Method consented = requireSignature(loader.loadClass(consentClass).getDeclaredMethod("OooO0o"),
+            Method consented = requireSignature(loader.loadClass(consent.owner()).getDeclaredMethod(consent.name()),
                     boolean.class, true);
+            adPrepared.setAccessible(true);
+            consented.setAccessible(true);
             Constructor<?> constructor = splash.getDeclaredConstructor(
                     loader.loadClass("com.xiaomi.smarthome.SmartHomeMainActivity"));
             eventHook = hook(adPrepared).intercept(chain -> {
@@ -233,20 +277,34 @@ public final class MiHomeModule extends XposedModule {
         }
     }
 
-    private void hideProductTab(ClassLoader loader, String tabInfoClass) {
+    private void hideProductTab(ClassLoader loader) {
         try {
-            Class<?> tabInfo = loader.loadClass(tabInfoClass);
-            Field tabId = tabInfo.getDeclaredField("OooO00o");
             Class<?> tabIdType = loader.loadClass("com.xiaomi.smarthome.tab.TabId");
-            if (tabId.getType() != tabIdType || Modifier.isStatic(tabId.getModifiers())) {
-                throw new IllegalStateException("产品 Tab 标识字段已变化");
-            }
             Object brand = tabIdType.getField("Brand").get(null);
-            tabId.setAccessible(true);
             Class<?> tabView = loader.loadClass(
                     "com.xiaomi.smarthome.newui.buttomtab.TabPageIndicatorNew$TabView").asSubclass(View.class);
-            Method setTabInfo = requireSignature(tabView.getDeclaredMethod("setTabInfo", tabInfo), void.class, false);
-            hook(setTabInfo).intercept(chain -> {
+            Method setter = null;
+            Field id = null;
+            for (Method method : tabView.getDeclaredMethods()) {
+                if (method.getName().equals("setTabInfo") && method.getReturnType() == void.class
+                        && !Modifier.isStatic(method.getModifiers()) && method.getParameterCount() == 1) {
+                    for (Field field : method.getParameterTypes()[0].getDeclaredFields()) {
+                        if (field.getType() == tabIdType && !Modifier.isStatic(field.getModifiers())) {
+                            if (id != null) {
+                                throw new IllegalStateException("产品 Tab 标识字段不唯一");
+                            }
+                            setter = method;
+                            id = field;
+                        }
+                    }
+                }
+            }
+            if (id == null) {
+                throw new IllegalStateException("产品 Tab 标识字段缺失");
+            }
+            Field tabId = id;
+            tabId.setAccessible(true);
+            hook(setter).intercept(chain -> {
                 Object result = chain.proceed();
                 Object info = chain.getArg(0);
                 if (info != null && tabId.get(info) == brand) {
@@ -271,30 +329,55 @@ public final class MiHomeModule extends XposedModule {
                 if (!CookerBundlePatch.matchesPath(source)) {
                     return chain.proceed();
                 }
-                Object[] args = chain.getArgs().toArray();
+                Path target;
                 try {
                     Path original = Paths.get(source);
-                    byte[] patched = CookerBundlePatch.patch(Files.readAllBytes(original));
-                    Path target = original.resolveSibling("mihome-purifier-device-v1.bundle");
-                    Path temporary = Files.createTempFile(original.getParent(), "mihome-purifier-", ".tmp");
-                    try {
-                        Files.write(temporary, patched);
-                        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
-                                StandardCopyOption.REPLACE_EXISTING);
-                    } finally {
-                        Files.deleteIfExists(temporary);
+                    Path manifest = original.getParent().getParent().resolve("model_list.json");
+                    if (!Files.isRegularFile(manifest) || Files.size(manifest) > 64 * 1024
+                            || Files.size(original) > MAX_BUNDLE_BYTES) {
+                        target = null;
+                    } else {
+                        target = patchCookerBundle(original, manifest);
                     }
-                    args[0] = target.toString();
-                    log(Log.INFO, TAG, "电饭煲默认设备页补丁已应用");
-                } catch (IOException | RuntimeException e) {
+                } catch (IOException | JSONException | RuntimeException e) {
                     log(Log.ERROR, TAG, "电饭煲补丁失败，加载原插件：" + e.getClass().getSimpleName());
+                    target = null;
                 }
+                if (target == null) {
+                    return chain.proceed();
+                }
+                Object[] args = chain.getArgs().toArray();
+                args[0] = target.toString();
+                log(Log.INFO, TAG, "电饭煲默认设备页补丁已应用");
                 // 资源基址（第二个参数）仍指向原目录；原加载失败时不重复执行。
                 return chain.proceed(args);
             });
             log(Log.INFO, TAG, "电饭煲默认设备页规则已注册");
         } catch (ReflectiveOperationException | RuntimeException e) {
             log(Log.ERROR, TAG, "电饭煲规则不兼容，保留原页面", e);
+        }
+    }
+
+    private static Path patchCookerBundle(Path original, Path manifest) throws IOException, JSONException {
+        JSONArray models = new JSONObject(new String(Files.readAllBytes(manifest),
+                StandardCharsets.UTF_8)).getJSONArray("model_list");
+        if (models.length() == 0) {
+            return null;
+        }
+        for (int i = 0; i < models.length(); i++) {
+            if (!CookerBundlePatch.isCookerModel(models.getString(i))) {
+                return null;
+            }
+        }
+        byte[] patched = CookerBundlePatch.patch(Files.readAllBytes(original));
+        Path target = original.resolveSibling("mihome-purifier-device-v1.bundle");
+        Path temporary = Files.createTempFile(original.getParent(), "mihome-purifier-", ".tmp");
+        try {
+            Files.write(temporary, patched);
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            return target;
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 
