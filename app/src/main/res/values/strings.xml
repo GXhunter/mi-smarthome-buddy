@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">米家净化</string>
-    <string name="module_description">关闭广告策略及开屏广告等待 · 隐藏产品 Tab 和商城中心 · 电饭煲默认设备页</string>
+    <string name="app_name">ad-hunter</string>
+    <string name="module_description">12306 开屏、首页轮播及订单页广告屏蔽 · 米家广告与购物入口精简 · 电饭煲默认设备页</string>
 </resources>

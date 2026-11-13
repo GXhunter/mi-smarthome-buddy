@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MiHomePurifier"
+rootProject.name = "ad-hunter"
 include(":app")

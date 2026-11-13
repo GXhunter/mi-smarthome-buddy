@@ -3,7 +3,7 @@
 ## 目标与沟通
 
 - 默认用中文沟通，修改代码前说明改动点。
-- 本仓库是“米家净化”LSPosed 模块，保持现有纯 Java、Modern Xposed API 102 实现。
+- 本仓库是 ad-hunter（原“米家净化”）LSPosed 模块，保持现有纯 Java、Modern Xposed API 102 实现。
 - 优先做能完整满足需求的最小修改，不引入未要求的设置界面、通用 Hook 框架或兼容层。
 - 修改生产依赖、执行数据库迁移或删除用户已有文件前，确认具体目标和影响。同一对话中的已有授权继续有效；只读检查和清理本次生成的临时文件无需重复确认。
 - 优先使用 Gradle Wrapper 和现有脚本。引入新工具前，说明必要性、替代方案和影响并取得确认。
@@ -38,17 +38,35 @@ macOS / Linux 使用 `bash gradlew`、`python3`。如有自行提取的真实插
 
 ## 当前适配证据
 
-以下映射仅针对米家 11.8.707（110817071），升级后必须重新核对。
+米家只对 11.8.707（110817071）和 11.9.705（110917051）安装规则。下表双值依次对应这两个版本，升级后须重新核对。
 
 | 功能 | 入口与约束 |
 | --- | --- |
-| 产品 Tab | `TabPageIndicatorNew$TabView.setTabInfo(_m_j.j87)`；`OooO00o` 为 Tab ID，隐藏 `Brand` 并保留原索引 |
-| 商城中心 | `SettingMainPageV2.onViewCreated(View, Bundle)` 完成后隐藏字段 `Oooo0o` 指向的整行；资源 ID 为 `2131432991`。过早在 `onCreateView` 中隐藏会被后续初始化恢复 |
-| 广告策略 | `_m_j.y64.OooO00o(String)` 返回策略；六个广告开关及加载等待归零，其他字段保留；注册后使用宿主解析器自检 |
-| 开屏等待 | `_m_j.sz8` 构造完成后，在 `_m_j.in1.OooO0o()` 确认已同意隐私条款时发出无广告事件；`OooO00o(boolean)` 固定传 false |
+| 产品 Tab | `TabPageIndicatorNew$TabView.setTabInfo` 的参数为 `_m_j.j87` / `_m_j.ha7`。校验 `OooO00o` 为宿主的 `TabId`，隐藏 `Brand` 并保留原索引 |
+| 商城中心 | `SettingMainPageV2.onViewCreated(View, Bundle)` 完成后，按 ID `2131432991` / `2131433041` 从当前页面找出并隐藏整行。过早在 `onCreateView` 中隐藏会被后续初始化恢复 |
+| 广告策略 | `_m_j.y64.OooO00o(String)` / `_m_j.z74.OooO00o(String)`。安装前用不同样本值验证字段映射，安装后验证六个开关和等待时间归零，自检失败时撤销 Hook |
+| 开屏等待 | `_m_j.sz8` / `_m_j.s19` 构造完成后，分别用 `_m_j.in1.OooO0o()` / `_m_j.eo1.OooO0o()` 确认隐私同意。仅在已同意时发出无广告事件并将广告准备参数改为 false |
 | 电饭煲默认页 | `CatalystInstanceImpl.loadScriptFromFile(String, String, boolean)`，只处理 `chunmi.cooker.cmwy3` 的插件路径 `1016529/1034887/android/main.bundle` |
 
-模块仅在米家主进程与 `:plugin0`～`:plugin4` 加载；页面入口和广告规则仅在主进程注册。推送、摄像头等其他进程不加载当前规则。
+规则按包名与进程名组合隔离，页面和广告规则仅在对应主进程注册，电饭煲还允许米家 `:plugin0`～`:plugin4`。使用包就绪的加载器定位目标类，在对应 Application 创建前从宿主 Context 查询版本，随后撤掉版本查询 Hook。推送、摄像头等其他进程跳过。
+
+## 12306 适配
+
+- 基线：5.9.6.8（280），包名 `com.MobileTicket`。入口为 `RailwayHooks.java`。
+- API 102 的 `onPackageReady` 可直接访问业务类；实测此时再 Hook 壳的 `attachBaseContext` 已错过调用，不采用该方案。
+- 将 `BeanAds.haveSplashAd()`、`HomePageUtils$Companion.getCAN_SHOW_SPLASH()`、`AdUtils.splashNeedShowAgain()` 三个布尔结果设为 false，每项独立处理不兼容。
+- 广告地址层：`AppHelp.getAdsUrl01(Context)` 仅在系统拒绝回环地址明文 HTTP 时返回 `http://127.0.0.1/`。5.9.6.8 既有记录显示约 1–7 ms 内回调失败，仍会构造请求并进入失败处理。
+- 订单页 H5 广告位为 `0074`。`H5AdExposurePlugin.handleEvent(H5Event,H5BridgeContext)` 只匹配 `exposureH5Request` + POST + params.placementNo=0074，回传原桥接协议的 result=1、data.materialsList=[]，不执行广告网络请求；其他桥接请求原样执行。
+- 不修改网络安全策略，不全局拦截 HttpsUtils；保留显示层处理缓存和布局。
+- 首页顶部轮播使用 `CarouseAdOperator`：拦截缓存读取 `getCarouseAdData`（返回宿主 Kotlin Unit）、`updateAd(boolean)`、`restartHandlerScroll`；构造后暂停轮播并隐藏 `home_ticket_item_ad`，移除 `home_select_station` 原负顶部间距，按标题栏和系统状态栏高度重新定位。布局变化后须验证查询按钮不被遮挡。
+- Hook 点参考本机 HookVIP 4.1.7 的运行时记录，独立实现；不复制其代码，不修改 `isChineseLanguage`，不扩大到购票、认证或支付逻辑。
+- 验证前记录其他模块作用域；临时调整后恢复，确保最终在 HookVIP 未作用于 12306 时验证本模块。
+
+## 航旅纵横适配限制
+
+- 8.6.7（698）使用加固壳。实机确认仅加载本模块、不注册任何 Hook 时也会反复重启；移除作用域后恢复。根因尚未定位到具体检测函数。
+- 不将未经验证的航旅纵横规则或作用域加入发布 APK。先解决注入兼容性，再验证广告拦截。实验代码和提取的业务 DEX 仅保存在 `work/umetrip/`。
+- 当前显示名为 ad-hunter，安装包名和入口类保持原值以便覆盖升级；日志标签为 `AdHunter`。
 
 ## 实现约束
 
