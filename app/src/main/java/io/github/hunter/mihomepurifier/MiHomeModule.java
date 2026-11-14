@@ -33,12 +33,14 @@ public final class MiHomeModule extends XposedModule {
     static final String TAG = "AdHunter";
     private static final long MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
     private String mProcessName;
+    private boolean mMaimaiHookAttempted;
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
         mProcessName = param.getProcessName();
         // 电饭煲在独立 RN 插件进程运行；推送及摄像头进程不加载规则。
-        if (!isTargetProcess(TARGET_PACKAGE) && !isTargetProcess(RailwayHooks.PACKAGE)) {
+        if (!isTargetProcess(TARGET_PACKAGE) && !isTargetProcess(RailwayHooks.PACKAGE)
+                && !isTargetProcess(MaimaiSplashRule.PACKAGE)) {
             detach();
             return;
         }
@@ -55,6 +57,13 @@ public final class MiHomeModule extends XposedModule {
         ClassLoader loader = param.getClassLoader();
         if (RailwayHooks.PACKAGE.equals(packageName)) {
             RailwayHooks.install(this, loader);
+            return;
+        }
+        if (MaimaiSplashRule.PACKAGE.equals(packageName)) {
+            if (!mMaimaiHookAttempted) {
+                mMaimaiHookAttempted = true;
+                MaimaiSplashRule.attach(this, param);
+            }
             return;
         }
         defaultCookerDeviceTab(loader);
@@ -102,7 +111,8 @@ public final class MiHomeModule extends XposedModule {
             return TARGET_PACKAGE.equals(mProcessName)
                     || mProcessName.matches("com\\.xiaomi\\.smarthome:plugin[0-4]");
         }
-        return RailwayHooks.PACKAGE.equals(packageName) && RailwayHooks.PACKAGE.equals(mProcessName);
+        return (RailwayHooks.PACKAGE.equals(packageName) || MaimaiSplashRule.PACKAGE.equals(packageName))
+                && packageName.equals(mProcessName);
     }
 
     private void hideMallCenter(ClassLoader loader) {

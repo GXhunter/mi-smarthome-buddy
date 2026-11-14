@@ -32,7 +32,8 @@ dependencies {
 
 val compilePatchCheck by tasks.registering(JavaCompile::class) {
     source("src/main/java/io/github/hunter/mihomepurifier/CookerBundlePatch.java",
-        "src/main/java/io/github/hunter/mihomepurifier/MiHomeDex.java", "src/test/java")
+        "src/main/java/io/github/hunter/mihomepurifier/MiHomeDex.java",
+        "src/main/java/io/github/hunter/mihomepurifier/MaimaiDex.java", "src/test/java")
     classpath = files()
     destinationDirectory.set(layout.buildDirectory.dir("patch-check"))
     options.encoding = "UTF-8"
@@ -44,6 +45,14 @@ tasks.register<JavaExec>("verifyMiHomeDex") {
     mainClass.set("io.github.hunter.mihomepurifier.MiHomeDexTest")
     enableAssertions = true
     providers.gradleProperty("miHomeApks").orNull?.split(File.pathSeparator)?.let { args(it) }
+}
+
+tasks.register<JavaExec>("verifyMaimaiDex") {
+    dependsOn(compilePatchCheck)
+    classpath = files(compilePatchCheck.flatMap { it.destinationDirectory })
+    mainClass.set("io.github.hunter.mihomepurifier.MaimaiDexTest")
+    enableAssertions = true
+    providers.gradleProperty("maimaiApks").orNull?.split(File.pathSeparator)?.let { args(it) }
 }
 
 tasks.register<JavaExec>("verifyPatch") {

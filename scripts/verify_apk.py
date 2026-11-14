@@ -29,7 +29,9 @@ with ZipFile(apk) as archive:
     prefix = "META-INF/xposed/"
     entries = archive.read(prefix + "java_init.list").decode().splitlines()
     assert entries == ["io.github.hunter.mihomepurifier.MiHomeModule"], entries
-    assert archive.read(prefix + "scope.list").decode().splitlines() == ["com.xiaomi.smarthome", "com.MobileTicket"]
+    assert archive.read(prefix + "scope.list").decode().splitlines() == [
+        "com.xiaomi.smarthome", "com.MobileTicket", "com.taou.maimai"
+    ]
     properties = dict(line.split("=", 1) for line in archive.read(prefix + "module.prop").decode().splitlines())
     assert properties["minApiVersion"] == properties["targetApiVersion"] == "102", properties
     assert properties["staticScope"] == "true", properties
@@ -38,6 +40,8 @@ with ZipFile(apk) as archive:
     assert ("L" + entries[0].replace(".", "/") + ";").encode() in classes, "模块入口未打包"
     assert b"Lio/github/hunter/mihomepurifier/UmetripHooks;" not in classes, "不兼容的航旅纵横实验规则不应打包"
     assert b"Lio/github/hunter/mihomepurifier/RailwayHooks;" in classes, "12306 规则未打包"
+    assert b"Lio/github/hunter/mihomepurifier/MaimaiSplashRule;" in classes, "脉脉规则未打包"
+    assert b"Lio/github/hunter/mihomepurifier/MaimaiDex;" in classes, "脉脉 DEX 定位器未打包"
     assert not any(name.startswith(b"Lio/github/libxposed/") for name in classes), "API 不应打入 APK"
     assert "assets/xposed_init" not in archive.namelist(), "不应混用旧版 Xposed 入口"
 print(f"PASS: {apk} — API 102 元数据、作用域、入口类及 compileOnly 打包检查通过")

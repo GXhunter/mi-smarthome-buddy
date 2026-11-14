@@ -84,7 +84,7 @@ final class MiHomeDex {
         return input.readBoolean() ? new MethodId(input.readUTF(), input.readUTF()) : null;
     }
 
-    private static byte[] identity(String baseApk, String[] splits) throws IOException {
+    static byte[] identity(String baseApk, String[] splits) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             fingerprint(baseApk, digest);
@@ -127,6 +127,15 @@ final class MiHomeDex {
     }
 
     private static void scanApk(String path, Map<Integer, MethodId> targets) throws IOException {
+        forEachDex(path, dex -> dex.scan(targets));
+    }
+
+    @FunctionalInterface
+    interface DexVisitor {
+        void visit(Dex dex) throws IOException;
+    }
+
+    static void forEachDex(String path, DexVisitor visitor) throws IOException {
         try (ZipFile apk = new ZipFile(path)) {
             var entries = apk.entries();
             while (entries.hasMoreElements()) {
@@ -153,7 +162,7 @@ final class MiHomeDex {
                     }
                 }
                 try {
-                    new Dex(bytes).scan(targets);
+                    visitor.visit(new Dex(bytes));
                 } catch (IndexOutOfBoundsException | IllegalArgumentException | ArithmeticException e) {
                     throw new IOException("DEX 表或指令越界", e);
                 }
@@ -161,7 +170,7 @@ final class MiHomeDex {
         }
     }
 
-    private static final class Dex {
+    static final class Dex {
         private final ByteBuffer mData;
         private final int mStrings;
         private final int mTypes;
@@ -188,6 +197,102 @@ final class MiHomeDex {
             mStringType = findString("Ljava/lang/String;");
             mBooleanType = findString("Z");
             mVoidType = findString("V");
+        }
+
+        record Ref(String owner, String name, String result, java.util.List<String> parameters) {}
+        record Body(java.util.Set<Ref> calls, java.util.Set<Ref> interfaceCalls,
+                    java.util.Set<String> strings) {}
+
+        @FunctionalInterface
+        interface MethodVisitor {
+            void visit(int flags, Ref method, int code) throws IOException;
+        }
+
+        void visitMethods(String prefix, MethodVisitor visitor) throws IOException {
+            int classes = mData.getInt(100);
+            int count = mData.getInt(96);
+            for (int i = 0; i < count; i++) {
+                int entry = classes + i * 32;
+                String owner = string(typeString(mData.getInt(entry)));
+                int data = mData.getInt(entry + 24);
+                if (data == 0 || !owner.startsWith(prefix)) {
+                    continue;
+                }
+                mData.position(data);
+                int fields = Math.addExact(uleb(), uleb());
+                int direct = uleb();
+                int virtual = uleb();
+                for (int j = 0; j < fields; j++) {
+                    uleb();
+                    uleb();
+                }
+                visitMethodList(direct, visitor);
+                visitMethodList(virtual, visitor);
+            }
+        }
+
+        private void visitMethodList(int count, MethodVisitor visitor) throws IOException {
+            int index = 0;
+            for (int i = 0; i < count; i++) {
+                index = Math.addExact(index, uleb());
+                int flags = uleb();
+                int code = uleb();
+                if (code != 0) {
+                    visitor.visit(flags, ref(index), code);
+                }
+            }
+        }
+
+        private Ref ref(int index) throws IOException {
+            if (index < 0 || index >= mData.getInt(88)) {
+                throw new IOException("DEX 方法引用越界");
+            }
+            int method = mMethods + index * 8;
+            int proto = mPrototypes + ushort(method + 2) * 12;
+            int list = mData.getInt(proto + 8);
+            int count = list == 0 ? 0 : mData.getInt(list);
+            if (count < 0 || count > 65535 || (list != 0 && list + 4L + 2L * count > mData.limit())) {
+                throw new IOException("DEX 方法参数范围无效");
+            }
+            var parameters = new java.util.ArrayList<String>(count);
+            for (int i = 0; i < count; i++) {
+                parameters.add(string(typeString(ushort(list + 4 + 2 * i))));
+            }
+            return new Ref(string(typeString(ushort(method))), string(mData.getInt(method + 4)),
+                    string(typeString(mData.getInt(proto + 4))), java.util.List.copyOf(parameters));
+        }
+
+        Body body(int code, java.util.Set<String> markers) throws IOException {
+            var calls = new java.util.HashSet<Ref>();
+            var interfaceCalls = new java.util.HashSet<Ref>();
+            var strings = new java.util.HashSet<String>();
+            int start = Math.addExact(code, 16);
+            int end = Math.addExact(start, Math.multiplyExact(mData.getInt(code + 12), 2));
+            if (end < start || end > mData.limit()) {
+                throw new IOException("DEX 指令范围无效");
+            }
+            for (int at = start; at < end;) {
+                int instruction = ushort(at);
+                int op = instruction & 0xff;
+                int width = instructionWidth(at, instruction, op);
+                if (width <= 0 || width > (end - at) / 2) {
+                    throw new IOException("DEX 指令长度无效");
+                }
+                if ((op >= 0x6e && op <= 0x72) || (op >= 0x74 && op <= 0x78)) {
+                    Ref target = ref(ushort(at + 2));
+                    calls.add(target);
+                    if (op == 0x72 || op == 0x78) {
+                        interfaceCalls.add(target);
+                    }
+                } else if (op == 0x1a || op == 0x1b) {
+                    String value = string(op == 0x1a ? ushort(at + 2) : mData.getInt(at + 2));
+                    if (markers.contains(value)) {
+                        strings.add(value);
+                    }
+                }
+                at += 2 * width;
+            }
+            return new Body(calls, interfaceCalls, strings);
         }
 
         void scan(Map<Integer, MethodId> targets) throws IOException {
